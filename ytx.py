@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import os
 import re
 import shutil
@@ -188,8 +189,72 @@ def summarize_transcript(transcript: str) -> str:
     return summary
 
 
-if __name__ == "__main__":
+def main() -> int:
+    """Main CLI entry point."""
+    parser = argparse.ArgumentParser(
+        prog="ytx",
+        description="YouTube audio transcription with Parakeet + Claude summarization"
+    )
+    parser.add_argument("url", help="YouTube URL")
+    parser.add_argument(
+        "-d", "--outdir",
+        help="Output directory (default: ~/Documents/Transcripts/Youtube)"
+    )
+    
+    args = parser.parse_args()
+    
+    # Check prerequisites
     check_prerequisites()
-    if len(sys.argv) > 1:
-        title = get_video_title(sys.argv[1])
-        print(f"Title: {title}")
+    
+    # Setup output directory
+    if args.outdir:
+        outdir = Path(args.outdir).expanduser()
+    else:
+        outdir = Path("~/Documents/Transcripts/Youtube").expanduser()
+    
+    outdir.mkdir(parents=True, exist_ok=True)
+    
+    # Get video title for filenames
+    print("Getting video title...", file=sys.stderr)
+    title = get_video_title(args.url)
+    
+    txt_path = outdir / f"{title}.txt"
+    summary_path = outdir / f"{title}-summary.md"
+    
+    # Download and convert audio
+    print("Downloading and converting audio...", file=sys.stderr)
+    with tempfile.TemporaryDirectory(prefix="ytx_") as tmpdir:
+        wav_path = Path(tmpdir) / "audio.wav"
+        download_and_convert_audio(args.url, wav_path)
+        
+        # Transcribe
+        print("Transcribing audio...", file=sys.stderr)
+        transcript = transcribe_audio(wav_path)
+    
+    # Save transcript
+    txt_path.write_text(transcript, encoding="utf-8")
+    print("Transcript saved:", txt_path, file=sys.stderr)
+    
+    # Summarize
+    print("Generating summary...", file=sys.stderr)
+    summary = summarize_transcript(transcript)
+    
+    # Save summary
+    summary_path.write_text(summary, encoding="utf-8")
+    print("Summary saved:", summary_path, file=sys.stderr)
+    
+    # Print output paths
+    print(str(txt_path))
+    print(str(summary_path))
+    
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as e:
+        print(f"ytx: error: {e}", file=sys.stderr)
+        sys.exit(1)
