@@ -92,13 +92,19 @@ def download_and_convert_audio(url: str, output_wav: Path) -> None:
         if result.returncode != 0:
             raise RuntimeError(f"Failed to download audio: {result.stderr.strip()}")
         
-        # Find the actual downloaded file (yt-dlp adds extension)
+        # Find the actual downloaded file (yt-dlp may or may not add extension)
         downloaded = None
-        for ext in [".m4a", ".webm", ".opus", ".mp3"]:
-            candidate = Path(f"{audio_file}{ext}")
-            if candidate.exists():
-                downloaded = candidate
-                break
+        
+        # Check without extension first
+        if audio_file.exists():
+            downloaded = audio_file
+        else:
+            # Check with common extensions
+            for ext in [".m4a", ".webm", ".opus", ".mp3"]:
+                candidate = Path(f"{audio_file}{ext}")
+                if candidate.exists():
+                    downloaded = candidate
+                    break
         
         if not downloaded:
             raise RuntimeError("Audio downloaded but file not found")
@@ -144,7 +150,7 @@ def transcribe_audio(wav_path: Path) -> str:
     
     # Run transcription
     result = subprocess.run(
-        ["swift", "run", "fluidaudio", "transcribe", str(wav_path)],
+        ["swift", "run", "-c", "release", "fluidaudiocli", "transcribe", str(wav_path)],
         cwd=str(fluidaudio_path),
         capture_output=True,
         text=True
