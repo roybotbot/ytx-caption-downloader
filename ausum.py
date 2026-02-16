@@ -10,6 +10,19 @@ import tempfile
 from pathlib import Path
 
 
+SUMMARY_INSTRUCTIONS = """Summarize the transcript with the following format and ouput it as a .md file:
+
+Major sections with short headers.
+
+Under each section, concise bullets of the key points.
+
+If the transcript describes building, making, or producing anything, extract a clear step-by-step list of how to make it.
+
+End with a short list of next steps for learning more or improving on the topic.
+
+Stay factual. No filler. No invented content."""
+
+
 def check_command(cmd: str) -> bool:
     """Check if a command exists on PATH."""
     return shutil.which(cmd) is not None
@@ -168,15 +181,8 @@ def transcribe_audio(wav_path: Path) -> str:
 
 def summarize_transcript(transcript: str) -> str:
     """Summarize transcript using Claude."""
-    # Load summary instructions
-    instructions_file = Path(__file__).parent / "transcript-summary.md"
-    if not instructions_file.exists():
-        raise RuntimeError(f"Summary instructions not found: {instructions_file}")
-    
-    instructions = instructions_file.read_text()
-    
     # Build prompt
-    prompt = f"{instructions}\n\nTranscript:\n\n{transcript}"
+    prompt = f"{SUMMARY_INSTRUCTIONS}\n\nTranscript:\n\n{transcript}"
     
     # Run Claude
     result = subprocess.run(
