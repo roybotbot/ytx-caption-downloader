@@ -11,17 +11,19 @@ import tempfile
 from pathlib import Path
 
 
-SUMMARY_INSTRUCTIONS = """Summarize the transcript with the following format and ouput it as a .md file:
+SUMMARY_INSTRUCTIONS = """Create a markdown summary of the following transcript. Output ONLY the markdown summary, no meta-commentary.
 
-Major sections with short headers.
+Format:
+- Major sections with short headers
+- Under each section, concise bullets of key points
+- If the transcript describes building/making/producing anything, include a clear step-by-step list
+- End with next steps for learning more
 
-Under each section, concise bullets of the key points.
-
-If the transcript describes building, making, or producing anything, extract a clear step-by-step list of how to make it.
-
-End with a short list of next steps for learning more or improving on the topic.
-
-Stay factual. No filler. No invented content."""
+Requirements:
+- Stay factual - no filler or invented content
+- Output the summary directly - do not describe what you would do
+- Do not ask for confirmation or approval
+- Start immediately with the first section header"""
 
 
 def get_config_path() -> Path:
