@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import os
+import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -42,6 +44,35 @@ def check_prerequisites() -> None:
         sys.exit(1)
 
 
+def sanitize_filename(name: str, max_len: int = 180) -> str:
+    """Sanitize a string for use as a filename."""
+    name = name.strip()
+    name = re.sub(r'[\/:\*\?"<>\|]', "-", name)
+    name = re.sub(r'\s+', " ", name)
+    name = re.sub(r'\.+$', "", name)
+    if not name:
+        name = "untitled"
+    if len(name) > max_len:
+        name = name[:max_len].rstrip()
+    return name
+
+
+def get_video_title(url: str) -> str:
+    """Get video title from YouTube URL."""
+    result = subprocess.run(
+        ["yt-dlp", "--no-warnings", "--print", "%(title)s", url],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to get video title: {result.stderr.strip()}")
+    
+    title = result.stdout.strip()
+    return sanitize_filename(title) if title else "untitled"
+
+
 if __name__ == "__main__":
     check_prerequisites()
-    print("All prerequisites satisfied")
+    if len(sys.argv) > 1:
+        title = get_video_title(sys.argv[1])
+        print(f"Title: {title}")
