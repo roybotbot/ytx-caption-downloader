@@ -1,4 +1,4 @@
-# ytx - YouTube Transcription eXtractor
+# ausum - Audio Summarization
 
 Automatically transcribe YouTube videos using local AI (FluidAudio Parakeet) and generate summaries with Claude.
 
@@ -51,10 +51,10 @@ pipx install .
 
 ```bash
 # Basic usage (saves to ~/Documents/Transcripts/Youtube)
-ytx "https://www.youtube.com/watch?v=VIDEO_ID"
+ausum "https://www.youtube.com/watch?v=VIDEO_ID"
 
 # Custom output directory
-ytx "https://www.youtube.com/watch?v=VIDEO_ID" -d ~/my-transcripts
+ausum "https://www.youtube.com/watch?v=VIDEO_ID" -d ~/my-transcripts
 ```
 
 Output files:
@@ -63,7 +63,7 @@ Output files:
 
 ## First Run
 
-The first time you run `ytx`, FluidAudio will download the Parakeet model (~600MB) from HuggingFace. This is cached locally and subsequent runs are much faster.
+The first time you run `ausum`, FluidAudio will download the Parakeet model (~600MB) from HuggingFace. This is cached locally and subsequent runs are much faster.
 
 ## Summary Format
 

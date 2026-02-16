@@ -40,7 +40,7 @@ def check_prerequisites() -> None:
         missing.append(f"No Package.swift found in FLUIDAUDIO_PATH: {fluidaudio_path}")
     
     if missing:
-        print("ytx: missing prerequisites:", file=sys.stderr)
+        print("ausum: missing prerequisites:", file=sys.stderr)
         for item in missing:
             print(f"  - {item}", file=sys.stderr)
         sys.exit(1)
@@ -75,7 +75,7 @@ def get_video_title(url: str) -> str:
 
 def download_and_convert_audio(url: str, output_wav: Path) -> None:
     """Download YouTube audio and convert to 16kHz mono WAV."""
-    with tempfile.TemporaryDirectory(prefix="ytx_") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="ausum_") as tmpdir:
         # Download as best audio
         audio_file = Path(tmpdir) / "audio"
         result = subprocess.run(
@@ -198,7 +198,7 @@ def summarize_transcript(transcript: str) -> str:
 def main() -> int:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        prog="ytx",
+        prog="ausum",
         description="YouTube audio transcription with Parakeet + Claude summarization"
     )
     parser.add_argument("url", help="YouTube URL")
@@ -229,7 +229,7 @@ def main() -> int:
     
     # Download and convert audio
     print("Downloading and converting audio...", file=sys.stderr)
-    with tempfile.TemporaryDirectory(prefix="ytx_") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="ausum_") as tmpdir:
         wav_path = Path(tmpdir) / "audio.wav"
         download_and_convert_audio(args.url, wav_path)
         
@@ -262,5 +262,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         sys.exit(130)
     except Exception as e:
-        print(f"ytx: error: {e}", file=sys.stderr)
+        print(f"ausum: error: {e}", file=sys.stderr)
         sys.exit(1)

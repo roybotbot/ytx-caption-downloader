@@ -1,5 +1,5 @@
 [project]
-name = "ytx"
+name = "ausum"
 version = "1.0.0"
 description = "YouTube audio transcription with Parakeet + Claude summarization"
 readme = "README.md"
@@ -10,7 +10,7 @@ authors = [
 ]
 
 [project.scripts]
-ytx = "ytx:main"
+ausum = "ausum:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
