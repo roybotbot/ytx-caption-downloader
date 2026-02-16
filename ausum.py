@@ -28,7 +28,7 @@ Structure:
      * Why it matters
      * How it works or applies
      * Examples or context from the transcript
-   - If the transcript describes building/making/producing anything, include a clear step-by-step list with explanations
+   - If the transcript describes building/making/producing anything, include a clear step-by-step numbered list with explanations
    - Include relevant quotes, data, or specific examples mentioned
 
 3. **Next Steps**
