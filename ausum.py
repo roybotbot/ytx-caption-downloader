@@ -163,14 +163,14 @@ def is_url(input_str: str) -> bool:
 def get_video_title(url: str) -> str:
     """Get video title from URL."""
     result = subprocess.run(
-        ["yt-dlp", "--no-warnings", "--impersonate", "chrome", "--print", "%(title)s", url],
+        ["yt-dlp", "--no-warnings", "--impersonate", "chrome-131", "--print", "%(title)s", url],
         capture_output=True,
         text=True
     )
     if result.returncode != 0:
         stderr = result.stderr.strip()
         if "Unsupported URL" in stderr or "Unable to extract" in stderr or "no video" in stderr.lower():
-            raise RuntimeError(f"No video found at URL: {url}")
+            raise RuntimeError(f"No video found at URL (site may require JavaScript or use an unsupported player): {url}")
         raise RuntimeError(f"Failed to get video title: {stderr}")
     
     title = result.stdout.strip()
@@ -213,7 +213,7 @@ def download_and_convert_audio(url: str, output_wav: Path) -> None:
             [
                 "yt-dlp",
                 "--no-warnings",
-                "--impersonate", "chrome",
+                "--impersonate", "chrome-131",
                 "-f", "bestaudio",
                 "-o", str(audio_file),
                 url,
@@ -224,7 +224,7 @@ def download_and_convert_audio(url: str, output_wav: Path) -> None:
         if result.returncode != 0:
             stderr = result.stderr.strip()
             if "Unsupported URL" in stderr or "Unable to extract" in stderr or "no video" in stderr.lower():
-                raise RuntimeError(f"No video found at URL: {url}")
+                raise RuntimeError(f"No video found at URL (site may require JavaScript or use an unsupported player): {url}")
             raise RuntimeError(f"Failed to download audio: {stderr}")
         
         # Find the actual downloaded file (yt-dlp may or may not add extension)
