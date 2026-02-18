@@ -315,7 +315,8 @@ def summarize_transcript(transcript: str) -> str:
     )
     
     if result.returncode != 0:
-        raise RuntimeError(f"Summarization failed: {result.stderr.strip()}")
+        error = result.stderr.strip() or result.stdout.strip() or f"claude exited with code {result.returncode}"
+        raise RuntimeError(f"Summarization failed: {error}")
     
     summary = result.stdout.strip()
     if not summary:
