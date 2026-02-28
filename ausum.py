@@ -124,8 +124,8 @@ def check_prerequisites() -> None:
     if not check_command("swift"):
         missing.append("swift (comes with Xcode)")
     
-    if not check_command("claude"):
-        missing.append("claude CLI (https://docs.anthropic.com/claude-cli)")
+    if not check_command("claude") and not check_command("pi"):
+        missing.append("claude CLI or pi (at least one must be available)")
     
     fluidaudio_path = os.environ.get("FLUIDAUDIO_PATH")
     if not fluidaudio_path:
@@ -302,26 +302,52 @@ def transcribe_audio(wav_path: Path) -> str:
 
 
 def summarize_transcript(transcript: str) -> str:
-    """Summarize transcript using Claude."""
-    # Build prompt
+    """Summarize transcript using Claude, falling back to pi if not logged in."""
     prompt = f"{SUMMARY_INSTRUCTIONS}\n\nTranscript:\n\n{transcript}"
-    
-    # Run Claude in non-interactive mode with prompt via stdin
+
+    # Try claude --print first
     result = subprocess.run(
         ["claude", "--print"],
         input=prompt,
         capture_output=True,
         text=True
     )
-    
-    if result.returncode != 0:
+
+    if result.returncode == 0:
+        summary = result.stdout.strip()
+        if summary:
+            return summary
+
+    combined = (result.stderr + result.stdout)
+    if "Not logged in" not in combined:
+        # Some other error — don't fall back, just raise
         error = result.stderr.strip() or result.stdout.strip() or f"claude exited with code {result.returncode}"
         raise RuntimeError(f"Summarization failed: {error}")
-    
+
+    # Fall back to pi -p
+    print("claude not logged in, falling back to pi...", file=sys.stderr)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", prefix="ausum_prompt_", delete=False) as f:
+        f.write(prompt)
+        prompt_file = f.name
+
+    try:
+        result = subprocess.run(
+            ["pi", "--no-tools", "-p", f"@{prompt_file}"],
+            capture_output=True,
+            text=True
+        )
+    finally:
+        Path(prompt_file).unlink(missing_ok=True)
+
+    if result.returncode != 0:
+        error = result.stderr.strip() or result.stdout.strip() or f"pi exited with code {result.returncode}"
+        raise RuntimeError(f"Summarization failed (claude and pi both failed): {error}")
+
     summary = result.stdout.strip()
     if not summary:
         raise RuntimeError("Summarization produced no output")
-    
+
     return summary
 
 
