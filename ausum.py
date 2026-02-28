@@ -106,25 +106,20 @@ def get_output_directory() -> Path:
     return output_dir
 
 
-def check_command(cmd: str) -> bool:
-    """Check if a command exists on PATH."""
-    return shutil.which(cmd) is not None
-
-
 def check_prerequisites() -> None:
     """Verify all required tools are available."""
     missing = []
     
-    if not check_command("yt-dlp"):
+    if not shutil.which("yt-dlp"):
         missing.append("yt-dlp (install: brew install yt-dlp)")
     
-    if not check_command("ffmpeg"):
+    if not shutil.which("ffmpeg"):
         missing.append("ffmpeg (install: brew install ffmpeg)")
     
-    if not check_command("swift"):
+    if not shutil.which("swift"):
         missing.append("swift (comes with Xcode)")
     
-    if not check_command("claude") and not check_command("pi"):
+    if not shutil.which("claude") and not shutil.which("pi"):
         missing.append("claude CLI or pi (at least one must be available)")
     
     fluidaudio_path = os.environ.get("FLUIDAUDIO_PATH")
@@ -182,21 +177,13 @@ def get_file_title(file_path: Path) -> str:
     return sanitize_filename(file_path.stem)
 
 
-def convert_local_file_to_wav(input_file: Path, output_wav: Path) -> None:
-    """Convert local audio/video file to 16kHz mono WAV."""
+def convert_to_wav(input_file: Path, output_wav: Path) -> None:
+    """Convert audio/video file to 16kHz mono WAV."""
     if not input_file.exists():
         raise RuntimeError(f"File not found: {input_file}")
     
-    # Convert to 16kHz mono WAV for FluidAudio
     result = subprocess.run(
-        [
-            "ffmpeg",
-            "-i", str(input_file),
-            "-ar", "16000",
-            "-ac", "1",
-            "-y",  # overwrite
-            str(output_wav),
-        ],
+        ["ffmpeg", "-i", str(input_file), "-ar", "16000", "-ac", "1", "-y", str(output_wav)],
         capture_output=True,
         text=True
     )
@@ -228,37 +215,11 @@ def download_and_convert_audio(url: str, output_wav: Path) -> None:
             raise RuntimeError(f"Failed to download audio: {stderr}")
         
         # Find the actual downloaded file (yt-dlp may or may not add extension)
-        downloaded = None
-        
-        # Check without extension first
-        if audio_file.exists():
-            downloaded = audio_file
-        else:
-            # Check with common extensions
-            for ext in [".m4a", ".webm", ".opus", ".mp3"]:
-                candidate = Path(f"{audio_file}{ext}")
-                if candidate.exists():
-                    downloaded = candidate
-                    break
-        
-        if not downloaded:
+        matches = list(Path(tmpdir).glob("audio*"))
+        if not matches:
             raise RuntimeError("Audio downloaded but file not found")
         
-        # Convert to 16kHz mono WAV for FluidAudio
-        result = subprocess.run(
-            [
-                "ffmpeg",
-                "-i", str(downloaded),
-                "-ar", "16000",
-                "-ac", "1",
-                "-y",  # overwrite
-                str(output_wav),
-            ],
-            capture_output=True,
-            text=True
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to convert audio: {result.stderr.strip()}")
+        convert_to_wav(matches[0], output_wav)
 
 
 def check_parakeet_model_cache() -> bool:
@@ -266,13 +227,7 @@ def check_parakeet_model_cache() -> bool:
     cache_dir = Path.home() / "Library" / "Application Support" / "FluidAudio" / "Models"
     if not cache_dir.exists():
         return False
-    
-    # Look for any parakeet model directory
-    for item in cache_dir.iterdir():
-        if item.is_dir() and "parakeet-tdt" in item.name.lower():
-            return True
-    
-    return False
+    return any(d.is_dir() and "parakeet-tdt" in d.name.lower() for d in cache_dir.iterdir())
 
 
 def transcribe_audio(wav_path: Path) -> str:
@@ -306,23 +261,27 @@ def summarize_transcript(transcript: str) -> str:
     prompt = f"{SUMMARY_INSTRUCTIONS}\n\nTranscript:\n\n{transcript}"
 
     # Try claude --print first
-    result = subprocess.run(
-        ["claude", "--print"],
-        input=prompt,
-        capture_output=True,
-        text=True
-    )
+    try:
+        result = subprocess.run(
+            ["claude", "--print"],
+            input=prompt,
+            capture_output=True,
+            text=True
+        )
 
-    if result.returncode == 0:
-        summary = result.stdout.strip()
-        if summary:
-            return summary
+        if result.returncode == 0:
+            summary = result.stdout.strip()
+            if summary:
+                return summary
 
-    combined = (result.stderr + result.stdout)
-    if "Not logged in" not in combined:
-        # Some other error — don't fall back, just raise
-        error = result.stderr.strip() or result.stdout.strip() or f"claude exited with code {result.returncode}"
-        raise RuntimeError(f"Summarization failed: {error}")
+        combined = (result.stderr + result.stdout)
+        if "Not logged in" not in combined:
+            # Some other error — don't fall back, just raise
+            error = result.stderr.strip() or result.stdout.strip() or f"claude exited with code {result.returncode}"
+            raise RuntimeError(f"Summarization failed: {error}")
+
+    except FileNotFoundError:
+        pass  # claude not installed, fall through to pi
 
     # Fall back to pi -p
     print("claude not logged in, falling back to pi...", file=sys.stderr)
@@ -400,7 +359,7 @@ def main() -> int:
         else:
             # Convert local file
             print("Converting audio...", file=sys.stderr)
-            convert_local_file_to_wav(input_path, wav_path)
+            convert_to_wav(input_path, wav_path)
         
         # Transcribe
         print("Transcribing audio...", file=sys.stderr)
