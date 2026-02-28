@@ -11,7 +11,7 @@ Reading is faster than watching videos. For certain types of videos I find it fa
 ## Features
 
 - **Local speech-to-text** using FluidAudio's Parakeet model (600M parameters, 25 European languages)
-- **Automatic summarization** with Claude, following structured format
+- **Automatic summarization** with Claude (falls back to pi if claude is unavailable or not logged in)
 - **Privacy-first** - all transcription runs locally on your Mac
 - **Simple CLI** - one command to get transcript + summary
 
@@ -23,8 +23,11 @@ Install required tools:
 # Package managers (one-time setup)
 brew install yt-dlp ffmpeg
 
-# Claude CLI
+# Claude CLI (recommended)
 # Follow: https://docs.anthropic.com/claude-cli
+
+# OR pi (used as automatic fallback if claude is unavailable or not logged in)
+# Follow: https://github.com/mariozechner/pi
 
 # FluidAudio (build from source)
 git clone https://github.com/FluidInference/FluidAudio.git
