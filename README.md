@@ -62,6 +62,9 @@ pipx install .
 # YouTube videos
 ausum "https://www.youtube.com/watch?v=VIDEO_ID"
 
+# YouTube videos with playlist in URL (only processes the single video)
+ausum "https://www.youtube.com/watch?v=VIDEO_ID&list=PLAYLIST_ID"
+
 # Local audio/video files
 ausum /path/to/video.mp4
 ausum ~/Downloads/podcast.mp3
@@ -69,6 +72,9 @@ ausum ./recording.wav
 
 # Override saved directory for a single run
 ausum "https://www.youtube.com/watch?v=VIDEO_ID" -d ~/my-transcripts
+
+# Open summary in mdv after creation
+ausum "https://www.youtube.com/watch?v=VIDEO_ID" --read
 ```
 
 **Supported formats:** Any audio or video format that ffmpeg can read (mp4, mp3, wav, m4a, webm, mkv, avi, flac, ogg, etc.)
