@@ -158,7 +158,7 @@ def is_url(input_str: str) -> bool:
 def get_video_title(url: str) -> str:
     """Get video title from URL."""
     result = subprocess.run(
-        ["yt-dlp", "--no-warnings", "--impersonate", "chrome-131", "--print", "%(title)s", url],
+        ["yt-dlp", "--no-warnings", "--impersonate", "chrome-131", "--no-playlist", "--print", "%(title)s", url],
         capture_output=True,
         text=True
     )
@@ -201,6 +201,7 @@ def download_and_convert_audio(url: str, output_wav: Path) -> None:
                 "yt-dlp",
                 "--no-warnings",
                 "--impersonate", "chrome-131",
+                "--no-playlist",
                 "-f", "bestaudio",
                 "-o", str(audio_file),
                 url,
@@ -321,6 +322,11 @@ def main() -> int:
         "-d", "--outdir",
         help="Output directory (overrides saved preference)"
     )
+    parser.add_argument(
+        "--read",
+        action="store_true",
+        help="Open the summary in mdv after it's created"
+    )
     
     args = parser.parse_args()
     
@@ -380,7 +386,10 @@ def main() -> int:
     # Print output paths
     print(str(txt_path))
     print(str(summary_path))
-    
+
+    if args.read:
+        subprocess.run(["mdv", str(summary_path)])
+
     return 0
 
 
