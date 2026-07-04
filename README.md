@@ -83,9 +83,11 @@ ausum "https://www.youtube.com/watch?v=VIDEO_ID" --read
 
 **Supported formats:** Any audio or video format that ffmpeg can read (mp4, mp3, wav, m4a, webm, mkv, avi, flac, ogg, etc.)
 
-Output files:
-- `<title>.txt` - Full transcript
-- `<title>-summary.md` - Structured summary
+Output files use a 3-5 word LLM-generated content description. Remote URLs append the author/uploader; local files omit author.
+- `<description> - <author>.txt` - Full transcript for remote URLs
+- `<description> - <author>-summary.md` - Structured summary for remote URLs
+- `<description>.txt` - Full transcript for local files
+- `<description>-summary.md` - Structured summary for local files
 
 ## First Run
 
@@ -120,6 +122,12 @@ Summaries follow a structured format:
 - **Next Steps** — actionable recommendations for learning more
 
 Each summary includes a source link at the bottom.
+
+## Instagram and Threads
+
+Instagram reels use browser cookies by default via `yt-dlp --cookies-from-browser chrome` because Instagram often blocks anonymous downloads. Override the browser with `AUSUM_YTDLP_COOKIES_FROM_BROWSER`, or set it to `none` to disable browser cookies.
+
+Threads text posts are not video/audio inputs. `ausum poll` skips and acknowledges Threads URLs so they do not retry forever; use `threader` for Threads posts.
 
 ## Queue (iOS Shortcut)
 

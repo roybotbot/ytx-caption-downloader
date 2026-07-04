@@ -11,7 +11,7 @@ import sys
 import tempfile
 import urllib.request
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 
 POLL_LABEL = "com.ausum.poll"
@@ -26,9 +26,14 @@ def format_clickable_path(path: Path) -> str:
     return f"\033]8;;{file_uri}\033\\{display_path}\033]8;;\033\\"
 
 
-SUMMARY_INSTRUCTIONS = """Create a comprehensive markdown summary of the following transcript. Output ONLY the markdown summary, no meta-commentary.
+SUMMARY_INSTRUCTIONS = """Create a concise filename description and comprehensive markdown summary of the following transcript. Output ONLY the filename line and markdown summary, no meta-commentary.
 
-Structure:
+First output exactly one filename line:
+Filename: <3-5 high-level words describing what the content is>
+
+Then output a blank line followed by the markdown summary.
+
+Summary structure:
 
 1. **Overview** (bullet list)
    - High-level concepts and first principles as skimmable bullets
@@ -53,9 +58,10 @@ Structure:
 Requirements:
 - Add substance to each bullet - avoid sparse one-liners
 - Stay factual - no filler or invented content
-- Output the summary directly - do not describe what you would do
+- The filename description must be content-based, not clickbait, and must not include the author
+- Output the filename line and summary directly - do not describe what you would do
 - Do not ask for confirmation or approval
-- Start immediately with" #[Title of Youtube Video] - Summary
+- After the filename line and blank line, start the summary with "#[Title of Youtube Video] - Summary"
 - Then begin first section with "## Overview" """
 
 
@@ -239,21 +245,75 @@ def is_url(input_str: str) -> bool:
 
 
 
-def get_video_title(url: str) -> str:
-    """Get video title from URL."""
+def url_hostname(url: str) -> str:
+    """Return lowercase hostname for a URL-like string."""
+    parsed = urlparse(url if url.startswith(("http://", "https://")) else f"https://{url}")
+    return (parsed.hostname or "").lower()
+
+
+
+def is_instagram_url(url: str) -> bool:
+    """Return True for Instagram URLs."""
+    hostname = url_hostname(url)
+    return hostname == "instagram.com" or hostname.endswith(".instagram.com")
+
+
+
+def is_threads_url(url: str) -> bool:
+    """Return True for Threads URLs, which are text posts and not ausum inputs."""
+    hostname = url_hostname(url)
+    return hostname in {"threads.com", "threads.net"} or hostname.endswith(".threads.com") or hostname.endswith(".threads.net")
+
+
+
+def browser_cookie_source_for_url(url: str) -> str | None:
+    """Return browser cookie source for yt-dlp, if configured for this URL."""
+    configured = os.environ.get("AUSUM_YTDLP_COOKIES_FROM_BROWSER")
+    if configured is not None:
+        configured = configured.strip()
+        if not configured or configured.lower() in {"0", "false", "none", "off"}:
+            return None
+        return configured
+
+    if is_instagram_url(url):
+        return "chrome"
+    return None
+
+
+
+def build_ytdlp_args(url: str) -> list[str]:
+    """Build common yt-dlp arguments for metadata and downloads."""
+    args = ["yt-dlp", "--no-warnings", "--impersonate", "chrome-131", "--no-playlist"]
+    cookie_source = browser_cookie_source_for_url(url)
+    if cookie_source:
+        args.extend(["--cookies-from-browser", cookie_source])
+    return args
+
+
+
+def parse_author_from_url(url: str) -> str | None:
+    """Extract an author-like username from URL path when present."""
+    path_parts = [unquote(part) for part in urlparse(url).path.split("/") if part]
+    for part in path_parts:
+        if part.startswith("@") and len(part) > 1:
+            return part[1:]
+    return None
+
+
+
+def get_remote_metadata(url: str) -> dict[str, str | None]:
+    """Get metadata needed for output naming from a remote URL."""
+    fallback_author = parse_author_from_url(url)
     result = subprocess.run(
-        ["yt-dlp", "--no-warnings", "--impersonate", "chrome-131", "--no-playlist", "--print", "%(title)s", url],
+        [*build_ytdlp_args(url), "--print", "%(uploader)s", url],
         capture_output=True,
         text=True
     )
     if result.returncode != 0:
-        stderr = result.stderr.strip()
-        if "Unsupported URL" in stderr or "Unable to extract" in stderr or "no video" in stderr.lower():
-            raise RuntimeError(f"No video found at URL (site may require JavaScript or use an unsupported player): {url}")
-        raise RuntimeError(f"Failed to get video title: {stderr}")
+        return {"author": fallback_author}
 
-    title = result.stdout.strip()
-    return sanitize_filename(title) if title else "untitled"
+    author = result.stdout.strip() or fallback_author
+    return {"author": author}
 
 
 
@@ -285,10 +345,7 @@ def download_and_convert_audio(url: str, output_wav: Path) -> None:
         audio_file = Path(tmpdir) / "audio"
         result = subprocess.run(
             [
-                "yt-dlp",
-                "--no-warnings",
-                "--impersonate", "chrome-131",
-                "--no-playlist",
+                *build_ytdlp_args(url),
                 "-f", "bestaudio/best",
                 "-o", str(audio_file) + ".%(ext)s",
                 url,
@@ -340,12 +397,43 @@ def transcribe_audio(wav_path: Path) -> str:
 
 
 
-def summarize_transcript(transcript: str) -> str:
+def parse_summary_response(response: str) -> tuple[str, str]:
+    """Parse pi response into filename description and markdown summary."""
+    lines = response.strip().splitlines()
+    if not lines:
+        raise RuntimeError("Summarization produced no output")
+
+    first_line = lines[0].strip()
+    if not first_line.lower().startswith("filename:"):
+        return "untitled", response.strip()
+
+    filename_description = first_line.split(":", 1)[1].strip() or "untitled"
+    summary_lines = lines[1:]
+    while summary_lines and not summary_lines[0].strip():
+        summary_lines.pop(0)
+    summary = "\n".join(summary_lines).strip()
+    if not summary:
+        raise RuntimeError("Summarization produced no summary")
+
+    return sanitize_filename(filename_description, max_len=80), summary
+
+
+
+def build_output_basename(filename_description: str, author: str | None) -> str:
+    """Build sanitized output basename from LLM description and optional author."""
+    parts = [filename_description]
+    if author:
+        parts.append(author)
+    return sanitize_filename(" - ".join(parts))
+
+
+
+def summarize_transcript(transcript: str) -> tuple[str, str]:
     """Summarize transcript using pi via RPC mode."""
     prompt = f"{SUMMARY_INSTRUCTIONS}\n\nTranscript:\n\n{transcript}"
 
     proc = subprocess.Popen(
-        ["pi", "--model", "opencode/minimax-m3-free", "--thinking", "minimal", "--mode", "rpc", "--no-session"],
+        ["pi", "--model", "opencode/nemotron-3-ultra-free", "--thinking", "minimal", "--mode", "rpc", "--no-session"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         text=True
@@ -378,11 +466,11 @@ def summarize_transcript(transcript: str) -> str:
     proc.wait()
     print(file=sys.stderr)
 
-    summary = "".join(chunks).strip()
-    if not summary:
+    response = "".join(chunks).strip()
+    if not response:
         raise RuntimeError("Summarization produced no output")
 
-    return summary
+    return parse_summary_response(response)
 
 
 
@@ -403,14 +491,12 @@ def process_input(input_arg: str, outdir: str | None = None, read_summary: bool 
     is_remote = is_url(input_arg)
 
     if is_remote:
-        print("Getting video title...", file=sys.stderr)
-        title = get_video_title(input_arg)
+        print("Getting video metadata...", file=sys.stderr)
+        metadata = get_remote_metadata(input_arg)
+        author = metadata["author"]
     else:
         input_path = Path(input_arg).expanduser()
-        title = get_file_title(input_path)
-
-    txt_path = transcript_dir / f"{title}.txt"
-    summary_path = summary_dir / f"{title}-summary.md"
+        author = None
 
     with tempfile.TemporaryDirectory(prefix="ausum_") as tmpdir:
         wav_path = Path(tmpdir) / "audio.wav"
@@ -425,12 +511,15 @@ def process_input(input_arg: str, outdir: str | None = None, read_summary: bool 
         print("Transcribing audio...", file=sys.stderr)
         transcript = transcribe_audio(wav_path)
 
+    print("Generating summary...", file=sys.stderr)
+    filename_description, summary = summarize_transcript(transcript)
+    basename = build_output_basename(filename_description, author)
+    txt_path = transcript_dir / f"{basename}.txt"
+    summary_path = summary_dir / f"{basename}-summary.md"
+
     if save_transcript:
         txt_path.write_text(transcript, encoding="utf-8")
         print("Transcript saved:", format_clickable_path(txt_path), file=sys.stderr)
-
-    print("Generating summary...", file=sys.stderr)
-    summary = summarize_transcript(transcript)
 
     source = input_arg.split("?")[0] if is_remote else input_arg
     summary = f"{summary}\n\n---\nSource: {source}"
@@ -519,6 +608,17 @@ def cmd_poll() -> int:
             continue
 
         print(f"\n→ {url}", file=sys.stderr)
+
+        if is_threads_url(url):
+            print("  Skipping Threads URL; use threader for text posts.", file=sys.stderr)
+            try:
+                queue_delete(queue_url, queue_token, normalized_item_id)
+            except Exception as exc:
+                print(f"  Failed to acknowledge skipped queue item {item_id}: {exc}", file=sys.stderr)
+                errors += 1
+                continue
+            processed += 1
+            continue
 
         try:
             result = process_input(url)

@@ -51,7 +51,21 @@ def test_main_preserves_direct_invocation_without_dl(monkeypatch):
 
 
 
-def test_summarize_transcript_uses_deepseek_flash_free_model(monkeypatch):
+def test_parse_summary_response_extracts_filename_description_and_summary():
+    response = """Filename: AI Agent Folder Systems
+
+# Summary
+
+Use a folder-first workflow for agent context and reusable project memory."""
+
+    filename_description, summary = ausum.parse_summary_response(response)
+
+    assert filename_description == "AI Agent Folder Systems"
+    assert summary == "# Summary\n\nUse a folder-first workflow for agent context and reusable project memory."
+
+
+
+def test_summarize_transcript_uses_nemotron_ultra_free_model(monkeypatch):
     popen_calls = []
 
     class FakeStdin:
@@ -64,7 +78,7 @@ def test_summarize_transcript_uses_deepseek_flash_free_model(monkeypatch):
     class FakeProc:
         stdin = FakeStdin()
         stdout = iter([
-            '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"summary"}}\n',
+            '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Filename: Folder Based Agent Workflows\\n\\nsummary"}}\n',
             '{"type":"agent_end"}\n',
         ])
 
@@ -80,17 +94,131 @@ def test_summarize_transcript_uses_deepseek_flash_free_model(monkeypatch):
 
     monkeypatch.setattr(ausum.subprocess, "Popen", fake_popen)
 
-    assert ausum.summarize_transcript("transcript") == "summary"
+    assert ausum.summarize_transcript("transcript") == ("Folder Based Agent Workflows", "summary")
     assert popen_calls[0] == [
         "pi",
         "--model",
-        "opencode/deepseek-v4-flash-free",
+        "opencode/nemotron-3-ultra-free",
         "--thinking",
         "minimal",
         "--mode",
         "rpc",
         "--no-session",
     ]
+
+
+
+def test_build_output_basename_uses_description_and_remote_author():
+    assert ausum.build_output_basename("Folder Based Agent Workflows", "Dave Shapiro") == "Folder Based Agent Workflows - Dave Shapiro"
+
+
+
+def test_build_output_basename_omits_author_for_local_files():
+    assert ausum.build_output_basename("Folder Based Agent Workflows", None) == "Folder Based Agent Workflows"
+
+
+
+def test_parse_author_from_url_extracts_threads_username():
+    assert ausum.parse_author_from_url("https://www.threads.com/@magdalenoxford/post/DZcWTgbjH4U?xmt=abc") == "magdalenoxford"
+
+
+
+def test_parse_author_from_url_returns_none_when_url_has_no_author():
+    assert ausum.parse_author_from_url("https://www.instagram.com/reel/DaOeY_Atxn0/") is None
+
+
+
+def test_get_remote_metadata_falls_back_to_url_author_when_ytdlp_metadata_fails(monkeypatch):
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "ERROR: metadata failed"
+
+    monkeypatch.setattr(ausum.subprocess, "run", lambda *_args, **_kwargs: Result())
+
+    assert ausum.get_remote_metadata("https://www.threads.com/@magdalenoxford/post/DZcWTgbjH4U") == {"author": "magdalenoxford"}
+
+
+
+def test_ytdlp_args_use_browser_cookies_for_instagram_by_default():
+    args = ausum.build_ytdlp_args("https://www.instagram.com/reel/DYek2NZvp63/")
+
+    assert "--cookies-from-browser" in args
+    assert "chrome" in args
+
+
+
+def test_ytdlp_args_do_not_use_browser_cookies_for_youtube_by_default():
+    args = ausum.build_ytdlp_args("https://www.youtube.com/watch?v=abc")
+
+    assert "--cookies-from-browser" not in args
+
+
+
+def test_cmd_poll_deletes_threads_urls_without_processing(monkeypatch, capsys):
+    monkeypatch.setattr(
+        ausum,
+        "load_config",
+        lambda: {
+            "queue_url": "https://queue.example",
+            "queue_token": "secret",
+            "summary_dir": "/tmp/summaries",
+            "transcript_dir": "/tmp/transcripts",
+        },
+    )
+    monkeypatch.setattr(
+        ausum,
+        "queue_fetch",
+        lambda *_: [{"id": "thread-1", "url": "https://www.threads.com/@user/post/abc"}],
+    )
+    calls = {"processed": [], "deleted": []}
+    monkeypatch.setattr(ausum, "process_input", lambda url: calls["processed"].append(url) or 0)
+    monkeypatch.setattr(ausum, "queue_delete", lambda *_args: calls["deleted"].append(_args[-1]))
+
+    assert ausum.cmd_poll() == 0
+    assert calls["processed"] == []
+    assert calls["deleted"] == ["thread-1"]
+
+    captured = capsys.readouterr()
+    assert "Skipping Threads URL" in captured.err
+
+
+
+def test_process_input_names_remote_outputs_from_summary_description_and_author(monkeypatch, tmp_path):
+    monkeypatch.setattr(ausum, "check_prerequisites", lambda: None)
+    monkeypatch.setattr(ausum, "get_output_dirs", lambda: (tmp_path, tmp_path))
+    monkeypatch.setattr(ausum, "load_config", lambda: {"save_transcript": True})
+    monkeypatch.setattr(ausum, "get_remote_metadata", lambda _url: {"author": "example.creator"})
+    monkeypatch.setattr(ausum, "download_and_convert_audio", lambda *_args: None)
+    monkeypatch.setattr(ausum, "transcribe_audio", lambda _wav_path: "transcript text")
+    monkeypatch.setattr(ausum, "summarize_transcript", lambda _transcript: ("Folder Based Agent Workflows", "# Summary"))
+
+    assert ausum.process_input("https://example.com/video?id=123") == 0
+
+    assert (tmp_path / "Folder Based Agent Workflows - example.creator.txt").read_text(encoding="utf-8") == "transcript text"
+    assert (tmp_path / "Folder Based Agent Workflows - example.creator-summary.md").read_text(encoding="utf-8") == (
+        "# Summary\n\n---\nSource: https://example.com/video"
+    )
+
+
+
+def test_process_input_names_local_outputs_from_summary_description_without_author(monkeypatch, tmp_path):
+    input_path = tmp_path / "original-video.mp4"
+    input_path.write_text("media", encoding="utf-8")
+
+    monkeypatch.setattr(ausum, "check_prerequisites", lambda: None)
+    monkeypatch.setattr(ausum, "get_output_dirs", lambda: (tmp_path, tmp_path))
+    monkeypatch.setattr(ausum, "load_config", lambda: {"save_transcript": True})
+    monkeypatch.setattr(ausum, "convert_to_wav", lambda *_args: None)
+    monkeypatch.setattr(ausum, "transcribe_audio", lambda _wav_path: "transcript text")
+    monkeypatch.setattr(ausum, "summarize_transcript", lambda _transcript: ("Folder Based Agent Workflows", "# Summary"))
+
+    assert ausum.process_input(str(input_path)) == 0
+
+    assert (tmp_path / "Folder Based Agent Workflows.txt").read_text(encoding="utf-8") == "transcript text"
+    assert (tmp_path / "Folder Based Agent Workflows-summary.md").read_text(encoding="utf-8") == (
+        f"# Summary\n\n---\nSource: {input_path}"
+    )
 
 
 
