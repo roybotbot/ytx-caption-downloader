@@ -1,3 +1,4 @@
+import json
 import plistlib
 import sys
 from pathlib import Path
@@ -5,6 +6,33 @@ from pathlib import Path
 import pytest
 
 import ausum
+
+
+class _FakeStdin:
+    def write(self, _text):
+        pass
+
+    def flush(self):
+        pass
+
+
+class _FakeRpcProc:
+    stdin = _FakeStdin()
+
+    def __init__(self, stdout_lines):
+        self._stdout = iter(stdout_lines)
+
+    @property
+    def stdout(self):
+        return self._stdout
+
+    def terminate(self):
+        pass
+
+    def wait(self):
+        pass
+
+
 
 
 def test_format_clickable_path_wraps_escaped_display_path_in_file_hyperlink():
@@ -65,46 +93,9 @@ Use a folder-first workflow for agent context and reusable project memory."""
 
 
 
-def test_summarize_transcript_uses_nemotron_ultra_free_model(monkeypatch):
-    popen_calls = []
-
-    class FakeStdin:
-        def write(self, _text):
-            pass
-
-        def flush(self):
-            pass
-
-    class FakeProc:
-        stdin = FakeStdin()
-        stdout = iter([
-            '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Filename: Folder Based Agent Workflows\\n\\nsummary"}}\n',
-            '{"type":"agent_end"}\n',
-        ])
-
-        def terminate(self):
-            pass
-
-        def wait(self):
-            pass
-
-    def fake_popen(args, **_kwargs):
-        popen_calls.append(args)
-        return FakeProc()
-
-    monkeypatch.setattr(ausum.subprocess, "Popen", fake_popen)
-
-    assert ausum.summarize_transcript("transcript") == ("Folder Based Agent Workflows", "summary")
-    assert popen_calls[0] == [
-        "pi",
-        "--model",
-        "opencode/nemotron-3-ultra-free",
-        "--thinking",
-        "minimal",
-        "--mode",
-        "rpc",
-        "--no-session",
-    ]
+def test_preferred_free_models_default_order_starts_with_deepseek_then_mimo():
+    assert ausum.PREFERRED_FREE_MODELS[0] == "opencode/deepseek-v4-flash-free"
+    assert ausum.PREFERRED_FREE_MODELS[1] == "opencode/mimo-v2.5-free"
 
 
 
@@ -202,6 +193,217 @@ def test_process_input_names_remote_outputs_from_summary_description_and_author(
 
 
 
+ZEN_MODELS_RESPONSE = {"data": [
+    {"id": "glm-5.2", "pricing": {"input": 1, "output": 2}},
+    {"id": "deepseek-v4-flash-free", "pricing": {"input": 0, "output": 0}},
+    {"id": "mimo-v2.5-free", "pricing": {"input": 0, "output": 0}},
+    {"id": "hy3-free", "pricing": {}},
+    {"id": "nemotron-3-ultra-free", "pricing": {"input": 0, "output": 0}},
+    {"id": "north-mini-code-free", "pricing": {"input": 0, "output": 0}},
+    {"id": "big-pickle", "pricing": {"input": 0, "output": 0}},
+]}
+
+
+def test_fetch_free_models_filters_by_pricing_and_suffix(monkeypatch):
+    monkeypatch.setattr(ausum, "_zen_models_http_get", lambda _url: json.dumps(ZEN_MODELS_RESPONSE))
+
+    assert ausum.fetch_free_models() == [
+        "opencode/deepseek-v4-flash-free",
+        "opencode/mimo-v2.5-free",
+        "opencode/hy3-free",
+        "opencode/nemotron-3-ultra-free",
+        "opencode/north-mini-code-free",
+        "opencode/big-pickle",
+    ]
+
+
+def test_fetch_free_models_returns_empty_list_on_http_failure(monkeypatch):
+    def fail(_url):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(ausum, "_zen_models_http_get", fail)
+
+    assert ausum.fetch_free_models() == []
+
+
+def test_build_failover_queue_preserves_static_priority_and_appends_dynamic(monkeypatch):
+    monkeypatch.setattr(ausum, "fetch_free_models", lambda: [
+        "opencode/deepseek-v4-flash-free",
+        "opencode/mimo-v2.5-free",
+        "opencode/hy3-free",
+        "opencode/nemotron-3-ultra-free",
+        "opencode/north-mini-code-free",
+        "opencode/big-pickle",
+    ])
+
+    assert ausum.build_failover_queue() == [
+        "opencode/deepseek-v4-flash-free",
+        "opencode/mimo-v2.5-free",
+        "opencode/hy3-free",
+        "opencode/nemotron-3-ultra-free",
+        "opencode/north-mini-code-free",
+        "opencode/big-pickle",
+    ]
+
+
+def test_build_failover_queue_dedupes_static_and_dynamic(monkeypatch):
+    monkeypatch.setattr(ausum, "fetch_free_models", lambda: ["opencode/deepseek-v4-flash-free", "opencode/x-free"])
+
+    assert ausum.build_failover_queue() == [
+        "opencode/deepseek-v4-flash-free",
+        "opencode/mimo-v2.5-free",
+        "opencode/x-free",
+    ]
+
+
+def test_summarize_transcript_succeeds_on_first_preferred_model_without_pushover(monkeypatch, capsys):
+    monkeypatch.setattr(ausum, "build_failover_queue", lambda: ["opencode/deepseek-v4-flash-free", "opencode/mimo-v2.5-free"])
+    monkeypatch.setattr(ausum, "should_notify_pushover_for_model", lambda model: model not in ausum.PREFERRED_FREE_MODELS)
+
+    pushover_calls = []
+    monkeypatch.setattr(ausum, "send_pushover", lambda **kwargs: pushover_calls.append(kwargs) or 0)
+
+    def fake_popen(args, **_kwargs):
+        return _FakeRpcProc([
+            '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Filename: Desc\\n\\nsummary"}}',
+            '{"type":"agent_end","willRetry":false}',
+        ])
+
+    monkeypatch.setattr(ausum.subprocess, "Popen", fake_popen)
+
+    assert ausum.summarize_transcript("transcript") == ("Desc", "summary")
+    assert pushover_calls == []
+
+    stderr = capsys.readouterr().err
+    assert "Model used: opencode/deepseek-v4-flash-free" in stderr
+
+
+def test_summarize_transcript_failovers_to_next_model_on_error_event(monkeypatch, capsys):
+    monkeypatch.setattr(ausum, "build_failover_queue", lambda: ["opencode/deepseek-v4-flash-free", "opencode/mimo-v2.5-free"])
+    monkeypatch.setattr(ausum, "should_notify_pushover_for_model", lambda model: model not in ausum.PREFERRED_FREE_MODELS)
+    pushover_calls = []
+    monkeypatch.setattr(ausum, "send_pushover", lambda **kwargs: pushover_calls.append(kwargs) or 0)
+
+    calls = []
+    def fake_popen(args, **_kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            return _FakeRpcProc([
+                '{"type":"message_update","assistantMessageEvent":{"type":"error","reason":"error"}}',
+                '{"type":"agent_end","willRetry":false}',
+            ])
+        return _FakeRpcProc([
+            '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Filename: Desc\\n\\nsummary"}}',
+            '{"type":"agent_end","willRetry":false}',
+        ])
+
+    monkeypatch.setattr(ausum.subprocess, "Popen", fake_popen)
+
+    assert ausum.summarize_transcript("transcript") == ("Desc", "summary")
+    assert [c[2] for c in calls] == ["opencode/deepseek-v4-flash-free", "opencode/mimo-v2.5-free"]
+
+    stderr = capsys.readouterr().err
+    assert "Failed models: opencode/deepseek-v4-flash-free" in stderr
+    assert "Model used: opencode/mimo-v2.5-free" in stderr
+
+
+def test_summarize_transcript_sends_pushover_when_dynamic_fallback_wins(monkeypatch):
+    monkeypatch.setattr(ausum, "build_failover_queue", lambda: ["opencode/deepseek-v4-flash-free", "opencode/mimo-v2.5-free", "opencode/nemotron-3-ultra-free"])
+    monkeypatch.setattr(ausum, "should_notify_pushover_for_model", lambda model: model not in ausum.PREFERRED_FREE_MODELS)
+    pushover_calls = []
+    monkeypatch.setattr(ausum, "send_pushover", lambda **kwargs: pushover_calls.append(kwargs) or 0)
+
+    calls = []
+    def fake_popen(args, **_kwargs):
+        calls.append(args)
+        if len(calls) < 3:
+            return _FakeRpcProc([
+                '{"type":"message_update","assistantMessageEvent":{"type":"error","reason":"error"}}',
+                '{"type":"agent_end","willRetry":false}',
+            ])
+        return _FakeRpcProc([
+            '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Filename: Desc\\n\\nsummary"}}',
+            '{"type":"agent_end","willRetry":false}',
+        ])
+
+    monkeypatch.setattr(ausum.subprocess, "Popen", fake_popen)
+
+    ausum.summarize_transcript("transcript")
+    assert len(pushover_calls) == 1
+    assert "opencode/nemotron-3-ultra-free" in pushover_calls[0]["message"]
+
+
+def test_summarize_transcript_raises_when_all_models_fail_and_sends_pushover(monkeypatch):
+    monkeypatch.setattr(ausum, "build_failover_queue", lambda: ["opencode/deepseek-v4-flash-free", "opencode/mimo-v2.5-free"])
+    pushover_calls = []
+    monkeypatch.setattr(ausum, "send_pushover", lambda **kwargs: pushover_calls.append(kwargs) or 0)
+
+    def fake_popen(args, **_kwargs):
+        return _FakeRpcProc([
+            '{"type":"message_update","assistantMessageEvent":{"type":"error","reason":"error"}}',
+            '{"type":"agent_end","willRetry":false}',
+        ])
+
+    monkeypatch.setattr(ausum.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(RuntimeError, match="All summarization models failed"):
+        ausum.summarize_transcript("transcript")
+    assert len(pushover_calls) == 1
+
+
+def test_send_pushover_returns_status_code_and_does_not_raise_on_http_error(monkeypatch):
+    def raise_urlopen(*_args, **_kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(ausum.urllib.request, "urlopen", raise_urlopen)
+    monkeypatch.setenv("PUSHOVER_USER_KEY", "user")
+    monkeypatch.setenv("ASUM_PUSHOVER_APP_TOKEN", "token")
+
+    assert ausum.send_pushover(message="test") == 0
+
+
+def test_cmd_poll_sends_pushover_when_process_input_raises(monkeypatch):
+    monkeypatch.setattr(
+        ausum,
+        "load_config",
+        lambda: {
+            "queue_url": "https://queue.example",
+            "queue_token": "secret",
+            "summary_dir": "/tmp/summaries",
+            "transcript_dir": "/tmp/transcripts",
+        },
+    )
+    monkeypatch.setattr(ausum, "queue_fetch", lambda *_: [{"id": "1", "url": "https://example.com/video"}])
+    monkeypatch.setattr(ausum, "process_input", lambda _url: (_ for _ in ()).throw(RuntimeError("download failed")))
+    monkeypatch.setattr(ausum, "queue_delete", lambda *_args: None)
+
+    pushover_calls = []
+    monkeypatch.setattr(ausum, "send_pushover", lambda **kwargs: pushover_calls.append(kwargs) or 0)
+
+    assert ausum.cmd_poll() == 1
+    assert any("download failed" in c["message"] for c in pushover_calls)
+
+
+def test_cmd_poll_sends_pushover_on_queue_fetch_failure(monkeypatch):
+    monkeypatch.setattr(
+        ausum,
+        "load_config",
+        lambda: {
+            "queue_url": "https://queue.example",
+            "queue_token": "secret",
+            "summary_dir": "/tmp/summaries",
+            "transcript_dir": "/tmp/transcripts",
+        },
+    )
+    monkeypatch.setattr(ausum, "queue_fetch", lambda *_: (_ for _ in ()).throw(RuntimeError("queue unreachable")))
+
+    pushover_calls = []
+    monkeypatch.setattr(ausum, "send_pushover", lambda **kwargs: pushover_calls.append(kwargs) or 0)
+
+    assert ausum.cmd_poll() == 1
+    assert any("queue unreachable" in c["message"] for c in pushover_calls)
+
+
 def test_process_input_names_local_outputs_from_summary_description_without_author(monkeypatch, tmp_path):
     input_path = tmp_path / "original-video.mp4"
     input_path.write_text("media", encoding="utf-8")
@@ -297,6 +499,9 @@ def test_install_service_only_writes_plist(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
     monkeypatch.setenv("WHISPER_CLI", "/Users/roy/bin/whisper-cli")
     monkeypatch.setenv("WHISPER_MODEL", "/Users/roy/models/ggml-large-v3-turbo.bin")
+    monkeypatch.delenv("PUSHOVER_USER_KEY", raising=False)
+    monkeypatch.delenv("ASUM_PUSHOVER_APP_TOKEN", raising=False)
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
 
     assert ausum.cmd_install_service() == 0
 
@@ -315,6 +520,31 @@ def test_install_service_only_writes_plist(monkeypatch, tmp_path, capsys):
     captured = capsys.readouterr()
     assert f"Installed: {plist_path}" in captured.out
     assert f"Logs at {log_path}" in captured.out
+
+
+
+def test_install_service_preserves_pushover_and_opencode_credentials(monkeypatch, tmp_path):
+    plist_path = tmp_path / "Library" / "LaunchAgents" / "com.ausum.poll.plist"
+    log_path = tmp_path / ".config" / "ausum" / "poll.log"
+
+    monkeypatch.setattr(ausum, "_ausum_plist_path", lambda: plist_path)
+    monkeypatch.setattr(ausum, "POLL_LOG_PATH", log_path)
+    monkeypatch.setattr(ausum.subprocess, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("PUSHOVER_USER_KEY", "user-123")
+    monkeypatch.setenv("ASUM_PUSHOVER_APP_TOKEN", "token-456")
+    monkeypatch.setenv("OPENCODE_API_KEY", "oc-key-789")
+    # Ensure whisper vars are unset so only pushover/opencode vars are asserted
+    monkeypatch.delenv("WHISPER_CLI", raising=False)
+    monkeypatch.delenv("WHISPER_MODEL", raising=False)
+
+    assert ausum.cmd_install_service() == 0
+
+    plist = plistlib.loads(plist_path.read_bytes())
+    env = plist["EnvironmentVariables"]
+    assert env["PUSHOVER_USER_KEY"] == "user-123"
+    assert env["ASUM_PUSHOVER_APP_TOKEN"] == "token-456"
+    assert env["OPENCODE_API_KEY"] == "oc-key-789"
 
 
 
