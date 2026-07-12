@@ -18,6 +18,15 @@ POLL_LABEL = "com.ausum.poll"
 POLL_INTERVAL_SECONDS = 1800
 POLL_LOG_PATH = Path.home() / ".config" / "ausum" / "poll.log"
 
+ZEN_MODELS_URL = "https://opencode.ai/zen/v1/models"
+
+PREFERRED_FREE_MODELS = [
+    "opencode/deepseek-v4-flash-free",
+    "opencode/mimo-v2.5-free",
+]
+
+ZEN_FREE_MODEL_ID_EXCEPTIONS = {"big-pickle"}
+
 
 def format_clickable_path(path: Path) -> str:
     """Return a shell-escaped path wrapped in an OSC 8 file hyperlink."""
@@ -63,6 +72,87 @@ Requirements:
 - Do not ask for confirmation or approval
 - After the filename line and blank line, start the summary with "#[Title of Youtube Video] - Summary"
 - Then begin first section with "## Overview" """
+
+
+def _zen_models_http_get(url: str) -> str:
+    """Fetch raw JSON text from the Zen models endpoint."""
+    headers = {"User-Agent": "ausum/1.0"}
+    api_key = os.environ.get("OPENCODE_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read().decode("utf-8")
+
+
+def fetch_free_models() -> list[str]:
+    """Fetch the list of free model IDs from OpenCode Zen, prefixed with opencode/."""
+    try:
+        raw = _zen_models_http_get(ZEN_MODELS_URL)
+        data = json.loads(raw)
+    except Exception as exc:
+        print(f"Warning: could not fetch Zen free models ({exc}); using static list only.", file=sys.stderr)
+        return []
+
+    models = data.get("data", []) if isinstance(data, dict) else []
+    free_ids: list[str] = []
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        model_id = model.get("id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        pricing = model.get("pricing", {}) if isinstance(model.get("pricing"), dict) else {}
+        input_cost = pricing.get("input")
+        output_cost = pricing.get("output")
+        is_free_pricing = isinstance(input_cost, (int, float)) and input_cost == 0 and isinstance(output_cost, (int, float)) and output_cost == 0
+        is_free_suffix = model_id.endswith("-free") or model_id in ZEN_FREE_MODEL_ID_EXCEPTIONS
+        if is_free_pricing or is_free_suffix:
+            free_ids.append(f"opencode/{model_id}")
+    return free_ids
+
+
+def build_failover_queue() -> list[str]:
+    """Build ordered failover queue: preferred static models first, then dynamic free models."""
+    queue: list[str] = []
+    seen: set[str] = set()
+    for model in PREFERRED_FREE_MODELS:
+        if model not in seen:
+            queue.append(model)
+            seen.add(model)
+    for model in fetch_free_models():
+        if model not in seen:
+            queue.append(model)
+            seen.add(model)
+    return queue
+
+
+def should_notify_pushover_for_model(model: str) -> bool:
+    """Return True when a model win warrants a Pushover notification (i.e. dynamic fallback)."""
+    return model not in PREFERRED_FREE_MODELS
+
+
+def send_pushover(message: str, title: str = "ausum") -> int:
+    """Send a Pushover notification. Returns HTTP status code, 0 on configuration/error failure."""
+    user_key = os.environ.get("PUSHOVER_USER_KEY")
+    app_token = os.environ.get("ASUM_PUSHOVER_APP_TOKEN")
+    if not user_key or not app_token:
+        print("Warning: PUSHOVER_USER_KEY or ASUM_PUSHOVER_APP_TOKEN not set; skipping notification.", file=sys.stderr)
+        return 0
+
+    payload = json.dumps({"token": app_token, "user": user_key, "message": message, "title": title}).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.pushover.net/1/messages.json",
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": "ausum/1.0"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.getcode()
+    except Exception as exc:
+        print(f"Warning: Pushover notification failed ({exc}).", file=sys.stderr)
+        return 0
 
 
 def queue_fetch(queue_url: str, queue_token: str) -> list[dict]:
@@ -428,21 +518,30 @@ def build_output_basename(filename_description: str, author: str | None) -> str:
 
 
 
-def summarize_transcript(transcript: str) -> tuple[str, str]:
-    """Summarize transcript using pi via RPC mode."""
-    prompt = f"{SUMMARY_INSTRUCTIONS}\n\nTranscript:\n\n{transcript}"
+def _run_pi_summary(model: str, prompt: str) -> tuple[str | None, str | None]:
+    """Run one pi RPC summarization attempt.
 
+    Returns (response_text, error_reason). On success response_text is set and error_reason is None.
+    On failure response_text is None and error_reason describes why.
+    """
     proc = subprocess.Popen(
-        ["pi", "--model", "opencode/nemotron-3-ultra-free", "--thinking", "minimal", "--mode", "rpc", "--no-session"],
+        ["pi", "--model", model, "--thinking", "minimal", "--mode", "rpc", "--no-session"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         text=True
     )
 
-    proc.stdin.write(json.dumps({"type": "prompt", "message": prompt}) + "\n")
-    proc.stdin.flush()
+    try:
+        proc.stdin.write(json.dumps({"type": "prompt", "message": prompt}) + "\n")
+        proc.stdin.flush()
+    except BrokenPipeError:
+        proc.wait()
+        return None, "pi stdin closed before prompt was sent"
 
-    chunks = []
+    chunks: list[str] = []
+    error_reason: str | None = None
+    saw_agent_end = False
+
     for line in proc.stdout:
         line = line.strip()
         if not line:
@@ -454,12 +553,16 @@ def summarize_transcript(transcript: str) -> tuple[str, str]:
 
         if event.get("type") == "message_update":
             delta = event.get("assistantMessageEvent", {})
-            if delta.get("type") == "text_delta":
+            delta_type = delta.get("type")
+            if delta_type == "text_delta":
                 chunk = delta.get("delta", "")
                 chunks.append(chunk)
                 print(chunk, end="", flush=True, file=sys.stderr)
+            elif delta_type == "error":
+                error_reason = delta.get("reason") or delta.get("message") or "streaming error"
 
         if event.get("type") == "agent_end":
+            saw_agent_end = True
             break
 
     proc.terminate()
@@ -467,10 +570,48 @@ def summarize_transcript(transcript: str) -> tuple[str, str]:
     print(file=sys.stderr)
 
     response = "".join(chunks).strip()
+    if error_reason:
+        return None, error_reason
     if not response:
-        raise RuntimeError("Summarization produced no output")
+        return None, "no output" if saw_agent_end else "agent_end not received"
+    return response, None
 
-    return parse_summary_response(response)
+
+def summarize_transcript(transcript: str) -> tuple[str, str]:
+    """Summarize transcript using pi via RPC mode with free-model failover."""
+    prompt = f"{SUMMARY_INSTRUCTIONS}\n\nTranscript:\n\n{transcript}"
+
+    queue = build_failover_queue()
+    if not queue:
+        raise RuntimeError("No summarization models available")
+
+    failed_models: list[tuple[str, str]] = []
+
+    for model in queue:
+        print(f"Trying model: {model}", file=sys.stderr)
+        response, error_reason = _run_pi_summary(model, prompt)
+        if response is not None:
+            filename_description, summary = parse_summary_response(response)
+            print(file=sys.stderr)
+            print(f"Model used: {model}", file=sys.stderr)
+            if failed_models:
+                print(f"Failed models: {', '.join(m for m, _ in failed_models)}", file=sys.stderr)
+            if should_notify_pushover_for_model(model):
+                send_pushover(
+                    message=f"ausum used fallback model {model} after preferred models failed.",
+                    title="ausum model failover",
+                )
+            return filename_description, summary
+
+        failed_models.append((model, error_reason or "unknown error"))
+        print(f"Model {model} failed: {error_reason}", file=sys.stderr)
+
+    failure_summary = "; ".join(f"{m} ({r})" for m, r in failed_models)
+    send_pushover(
+        message=f"ausum: all summarization models failed. Tried: {failure_summary}",
+        title="ausum all models failed",
+    )
+    raise RuntimeError(f"All summarization models failed: {failure_summary}")
 
 
 
@@ -571,6 +712,7 @@ def cmd_poll() -> int:
         items = queue_fetch(queue_url, queue_token)
     except Exception as exc:
         print(f"Error fetching queue: {exc}", file=sys.stderr)
+        send_pushover(message=f"ausum poll: failed to fetch queue: {exc}", title="ausum queue error")
         return 1
 
     if not isinstance(items, list):
@@ -628,11 +770,13 @@ def cmd_poll() -> int:
             break
         except Exception as exc:
             print(f"  Error: {exc} — will retry next poll", file=sys.stderr)
+            send_pushover(message=f"ausum poll: failed to process {url}: {exc}", title="ausum processing error")
             errors += 1
             continue
 
         if result != 0:
             print(f"  Failed with exit code {result}, keeping item in queue", file=sys.stderr)
+            send_pushover(message=f"ausum poll: processing {url} exited with code {result}", title="ausum processing error")
             errors += 1
             continue
 
@@ -675,7 +819,7 @@ def cmd_install_service() -> int:
     script_path = Path(__file__).resolve()
 
     environment = {}
-    for name in ("PATH", "WHISPER_CLI", "WHISPER_MODEL"):
+    for name in ("PATH", "WHISPER_CLI", "WHISPER_MODEL", "PUSHOVER_USER_KEY", "ASUM_PUSHOVER_APP_TOKEN", "OPENCODE_API_KEY"):
         value = os.environ.get(name)
         if value:
             environment[name] = value
