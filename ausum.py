@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
@@ -391,13 +392,39 @@ def parse_author_from_url(url: str) -> str | None:
 
 
 
+def _is_transient_ytdlp_error(stderr: str) -> bool:
+    """Return True when yt-dlp stderr indicates a transient/retryable error."""
+    transient_patterns = [
+        "Failed to parse JSON",
+        "empty media response",
+    ]
+    return any(p in stderr for p in transient_patterns)
+
+
+def _run_ytdlp_with_retry(args: list[str], retries: int = 2, delay: int = 4) -> subprocess.CompletedProcess:
+    """Run yt-dlp with retries on transient errors."""
+    last_result: subprocess.CompletedProcess | None = None
+    for attempt in range(retries + 1):
+        result = subprocess.run(args, capture_output=True, text=True)
+        last_result = result
+        if result.returncode == 0:
+            return result
+        stderr = result.stderr or ""
+        if not _is_transient_ytdlp_error(stderr):
+            return result
+        if attempt < retries:
+            print(f"  yt-dlp transient error, retrying in {delay}s ({attempt + 1}/{retries})...", file=sys.stderr)
+            time.sleep(delay)
+    return last_result
+
+
 def get_remote_metadata(url: str) -> dict[str, str | None]:
     """Get metadata needed for output naming from a remote URL."""
     fallback_author = parse_author_from_url(url)
-    result = subprocess.run(
+    result = _run_ytdlp_with_retry(
         [*build_ytdlp_args(url), "--print", "%(uploader)s", url],
-        capture_output=True,
-        text=True
+        retries=2,
+        delay=4,
     )
     if result.returncode != 0:
         return {"author": fallback_author}
@@ -433,15 +460,15 @@ def download_and_convert_audio(url: str, output_wav: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="ausum_") as tmpdir:
         # Download as best audio
         audio_file = Path(tmpdir) / "audio"
-        result = subprocess.run(
+        result = _run_ytdlp_with_retry(
             [
                 *build_ytdlp_args(url),
                 "-f", "bestaudio/best",
                 "-o", str(audio_file) + ".%(ext)s",
                 url,
             ],
-            capture_output=True,
-            text=True
+            retries=2,
+            delay=4,
         )
         if result.returncode != 0:
             stderr = result.stderr.strip()

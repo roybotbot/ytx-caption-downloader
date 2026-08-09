@@ -424,6 +424,144 @@ def test_process_input_names_local_outputs_from_summary_description_without_auth
 
 
 
+def test_ytdlp_retry_helper_retries_on_transient_json_parse_error(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 1
+        stdout = ""
+
+        def __init__(self, stderr):
+            self.stderr = stderr
+
+    def fake_run(args, **__):
+        calls.append(args)
+        if len(calls) == 1:
+            return Result("Failed to parse JSON (caused by JSONDecodeError)")
+        return Result("")
+
+    monkeypatch.setattr(ausum.subprocess, "run", fake_run)
+
+    ausum._run_ytdlp_with_retry(["yt-dlp", "--print", "%(uploader)s", "https://x"], retries=2, delay=0)
+
+    assert len(calls) == 2
+
+
+def test_ytdlp_retry_helper_does_not_retry_permanent_errors(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "Unsupported URL: not a video"
+
+    def fake_run(args, **__):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr(ausum.subprocess, "run", fake_run)
+
+    ausum._run_ytdlp_with_retry(["yt-dlp", "--print", "%(uploader)s", "https://x"], retries=2, delay=0)
+
+    assert len(calls) == 1
+
+
+def test_ytdlp_retry_helper_retries_on_empty_media_response(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 1
+        stdout = ""
+
+        def __init__(self, stderr):
+            self.stderr = stderr
+
+    def fake_run(args, **__):
+        calls.append(args)
+        if len(calls) == 1:
+            return Result("Instagram sent an empty media response")
+        return Result("ok")
+
+    monkeypatch.setattr(ausum.subprocess, "run", fake_run)
+
+    ausum._run_ytdlp_with_retry(["yt-dlp", "--print", "%(uploader)s", "https://x"], retries=2, delay=0)
+    assert len(calls) == 2
+
+
+def test_ytdlp_retry_helper_returns_first_result_on_success(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = "author"
+        stderr = ""
+
+    def fake_run(args, **__):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr(ausum.subprocess, "run", fake_run)
+
+    result = ausum._run_ytdlp_with_retry(["yt-dlp", "--print", "%(uploader)s", "https://x"], retries=2, delay=0)
+    assert len(calls) == 1
+    assert result.returncode == 0
+
+
+def test_ytdlp_retry_delay_applied_between_attempts(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(ausum.time, "sleep", lambda s: sleeps.append(s))
+
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "empty media response"
+
+    monkeypatch.setattr(ausum.subprocess, "run", lambda *a, **kw: Result())
+
+    ausum._run_ytdlp_with_retry(["yt-dlp", "https://x"], retries=2, delay=3)
+    assert sleeps == [3, 3]
+
+
+def test_download_and_convert_audio_retries_on_transient_error(monkeypatch):
+    retry_calls = []
+
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "empty media response"
+
+    monkeypatch.setattr(ausum, "_run_ytdlp_with_retry", lambda args, retries, delay: retry_calls.append(args) or Result())
+
+    class _FakeTmpDir:
+        def __enter__(self):
+            return "/tmp/fake"
+
+        def __exit__(self, *a):
+            pass
+
+    monkeypatch.setattr(ausum.tempfile, "TemporaryDirectory", lambda **__: _FakeTmpDir())
+
+    with pytest.raises(RuntimeError, match="Failed to download audio"):
+        ausum.download_and_convert_audio("https://x", Path("out.wav"))
+    assert len(retry_calls) == 1
+
+
+def test_get_remote_metadata_retries_through_helper(monkeypatch):
+    retry_calls = []
+
+    class Result:
+        returncode = 2
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(ausum, "_run_ytdlp_with_retry", lambda args, retries, delay: retry_calls.append(args) or Result())
+
+    result = ausum.get_remote_metadata("https://x")
+    assert result == {"author": None}
+    assert len(retry_calls) == 1
+
+
+
 def test_main_help_exposes_subcommands_and_direct_cli_usage(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["ausum", "--help"])
 
