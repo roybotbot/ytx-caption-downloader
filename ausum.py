@@ -835,6 +835,67 @@ def _ausum_plist_path() -> Path:
 
 
 
+def cmd_clear() -> int:
+    """Delete all items from the remote queue."""
+    config = load_config()
+
+    raw_queue_url = config.get("queue_url")
+    raw_queue_token = config.get("queue_token")
+    queue_url = raw_queue_url.strip() if isinstance(raw_queue_url, str) else ""
+    queue_token = raw_queue_token.strip() if isinstance(raw_queue_token, str) else ""
+
+    if not queue_url or not queue_token:
+        print(
+            "Error: queue_url and queue_token not configured.\n"
+            f"Add them to {get_config_path()}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        items = queue_fetch(queue_url, queue_token)
+    except Exception as exc:
+        print(f"Error fetching queue: {exc}", file=sys.stderr)
+        return 1
+
+    if not isinstance(items, list):
+        print("Error: malformed queue payload", file=sys.stderr)
+        return 1
+
+    if not items:
+        print("No pending URLs.")
+        return 0
+
+    deleted = 0
+    errors = 0
+
+    for item in items:
+        if not isinstance(item, dict):
+            print(f"Skipping malformed item: {item}", file=sys.stderr)
+            errors += 1
+            continue
+
+        item_id = item.get("id")
+        if type(item_id) not in (str, int) or not str(item_id).strip():
+            print(f"Skipping malformed item: {item}", file=sys.stderr)
+            errors += 1
+            continue
+
+        normalized = str(item_id)
+        try:
+            queue_delete(queue_url, queue_token, normalized)
+            deleted += 1
+        except Exception as exc:
+            print(f"Failed to delete {normalized}: {exc}", file=sys.stderr)
+            errors += 1
+
+    print(f"Cleared {deleted} items.", file=sys.stderr)
+    if errors:
+        print(f"Failed to delete {errors} items.", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_install_service() -> int:
     """Create a launchd plist that runs ausum poll every 30 minutes."""
     plist_path = _ausum_plist_path()
@@ -894,6 +955,7 @@ def build_command_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("poll", help="Process URLs queued from your phone")
     subparsers.add_parser("install-service", help="Install launchd plist for auto-polling")
     subparsers.add_parser("uninstall-service", help="Remove launchd plist")
+    subparsers.add_parser("clear", help="Delete all pending items from the queue")
     return parser
 
 
@@ -925,6 +987,7 @@ def print_main_help() -> None:
     print("  poll               Process URLs queued from your phone")
     print("  install-service    Install launchd plist for auto-polling")
     print("  uninstall-service  Remove launchd plist")
+    print("  clear              Delete all pending items from the queue")
 
 
 
@@ -939,7 +1002,7 @@ def should_run_subcommand(first_arg: str, command_names: set[str]) -> bool:
 def main() -> int:
     """Main CLI entry point."""
     argv = sys.argv[1:]
-    command_names = {"poll", "install-service", "uninstall-service"}
+    command_names = {"poll", "install-service", "uninstall-service", "clear"}
 
     if argv and argv[0] in {"-h", "--help"}:
         print_main_help()
@@ -954,6 +1017,8 @@ def main() -> int:
             return cmd_install_service()
         if args.command == "uninstall-service":
             return cmd_uninstall_service()
+        if args.command == "clear":
+            return cmd_clear()
 
     args = build_legacy_parser().parse_args(argv)
     return process_input(args.input, outdir=args.outdir, read_summary=args.read)

@@ -60,6 +60,7 @@ def test_subcommand_parser_exposes_only_required_subcommands():
         "poll",
         "install-service",
         "uninstall-service",
+        "clear",
     }
 
 
@@ -572,8 +573,127 @@ def test_main_help_exposes_subcommands_and_direct_cli_usage(monkeypatch, capsys)
     assert "Commands:" in captured.out
     assert "poll" in captured.out
     assert "install-service" in captured.out
-    assert "uninstall-service" in captured.out
+    assert "clear" in captured.out
 
+
+
+def test_cmd_clear_deletes_all_queue_items_and_reports_count(monkeypatch, capsys):
+    monkeypatch.setattr(
+        ausum,
+        "load_config",
+        lambda: {
+            "queue_url": "https://queue.example",
+            "queue_token": "secret",
+            "summary_dir": "/tmp/summaries",
+            "transcript_dir": "/tmp/transcripts",
+        },
+    )
+    monkeypatch.setattr(
+        ausum,
+        "queue_fetch",
+        lambda *_: [
+            {"id": "1", "url": "https://x.com/a"},
+            {"id": "2", "url": "https://x.com/b"},
+            {"id": "3", "url": "https://x.com/c"},
+        ],
+    )
+    deleted = []
+    monkeypatch.setattr(ausum, "queue_delete", lambda *a: deleted.append(a[-1]))
+
+    assert ausum.cmd_clear() == 0
+    assert deleted == ["1", "2", "3"]
+
+    captured = capsys.readouterr()
+    assert "Cleared 3 items" in captured.err
+
+
+def test_cmd_clear_handles_empty_queue(monkeypatch, capsys):
+    monkeypatch.setattr(
+        ausum,
+        "load_config",
+        lambda: {
+            "queue_url": "https://queue.example",
+            "queue_token": "secret",
+            "summary_dir": "/tmp/summaries",
+            "transcript_dir": "/tmp/transcripts",
+        },
+    )
+    monkeypatch.setattr(ausum, "queue_fetch", lambda *_: [])
+    monkeypatch.setattr(ausum, "queue_delete", lambda *a: (_ for _ in ()).throw(AssertionError("should not be called")))
+
+    assert ausum.cmd_clear() == 0
+
+    captured = capsys.readouterr()
+    assert "No pending URLs" in captured.out
+
+
+def test_cmd_clear_returns_1_on_queue_fetch_failure(monkeypatch):
+    monkeypatch.setattr(
+        ausum,
+        "load_config",
+        lambda: {
+            "queue_url": "https://queue.example",
+            "queue_token": "secret",
+            "summary_dir": "/tmp/summaries",
+            "transcript_dir": "/tmp/transcripts",
+        },
+    )
+    monkeypatch.setattr(ausum, "queue_fetch", lambda *_: (_ for _ in ()).throw(RuntimeError("down")))
+
+    assert ausum.cmd_clear() == 1
+
+
+def test_cmd_clear_continues_on_delete_failure(monkeypatch, capsys):
+    monkeypatch.setattr(
+        ausum,
+        "load_config",
+        lambda: {
+            "queue_url": "https://queue.example",
+            "queue_token": "secret",
+            "summary_dir": "/tmp/summaries",
+            "transcript_dir": "/tmp/transcripts",
+        },
+    )
+    monkeypatch.setattr(
+        ausum,
+        "queue_fetch",
+        lambda *_: [{"id": "1", "url": "https://x.com/a"}, {"id": "2", "url": "https://x.com/b"}],
+    )
+    calls = 0
+    def flaky_delete(*_a):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("delete failed")
+    monkeypatch.setattr(ausum, "queue_delete", flaky_delete)
+
+    assert ausum.cmd_clear() == 1  # one error
+    assert calls == 2  # still tried both
+
+    captured = capsys.readouterr()
+    assert "Failed to delete 1" in captured.err
+
+
+def test_cmd_clear_handles_malformed_items(monkeypatch, capsys):
+    monkeypatch.setattr(
+        ausum,
+        "load_config",
+        lambda: {
+            "queue_url": "https://queue.example",
+            "queue_token": "secret",
+            "summary_dir": "/tmp/summaries",
+            "transcript_dir": "/tmp/transcripts",
+        },
+    )
+    monkeypatch.setattr(ausum, "queue_fetch", lambda *_: [None, {"id": "1", "url": "https://x.com/a"}])
+    deleted = []
+    monkeypatch.setattr(ausum, "queue_delete", lambda *a: deleted.append(a[-1]))
+
+    assert ausum.cmd_clear() == 1
+    assert deleted == ["1"]
+
+    captured = capsys.readouterr()
+    assert "Skipping malformed item" in captured.err
 
 
 def test_main_prefers_existing_local_path_named_poll(monkeypatch, tmp_path):
