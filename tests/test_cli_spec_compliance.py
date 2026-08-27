@@ -563,6 +563,54 @@ def test_get_remote_metadata_retries_through_helper(monkeypatch):
 
 
 
+def test_ytdlp_retry_falls_back_to_no_cookies_when_all_cookie_attempts_fail(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "empty media response"
+
+    def fake_run(args, **__):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr(ausum.subprocess, "run", fake_run)
+
+    ausum._run_ytdlp_with_retry(
+        ["yt-dlp", "--cookies-from-browser", "chrome", "--print", "%(uploader)s", "https://x"],
+        retries=1, delay=0,
+    )
+
+    # 1 cookie attempt + 1 cookie retry + 1 no-cookie final = 3 calls
+    assert len(calls) == 3
+    # last call should have no --cookies-from-browser
+    assert "--cookies-from-browser" not in calls[-1]
+
+
+def test_ytdlp_retry_does_not_strip_cookies_when_not_present(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "empty media response"
+
+    def fake_run(args, **__):
+        calls.append(args)
+        return Result()
+
+    monkeypatch.setattr(ausum.subprocess, "run", fake_run)
+
+    ausum._run_ytdlp_with_retry(
+        ["yt-dlp", "--print", "%(uploader)s", "https://x"],
+        retries=1, delay=0,
+    )
+
+    # 2 attempts (initial + 1 retry), no cookie stripping needed
+    assert len(calls) == 2
+
+
 def test_main_help_exposes_subcommands_and_direct_cli_usage(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["ausum", "--help"])
 

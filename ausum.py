@@ -402,7 +402,7 @@ def _is_transient_ytdlp_error(stderr: str) -> bool:
 
 
 def _run_ytdlp_with_retry(args: list[str], retries: int = 2, delay: int = 4) -> subprocess.CompletedProcess:
-    """Run yt-dlp with retries on transient errors."""
+    """Run yt-dlp with retries on transient errors. On final retry, strips cookies."""
     last_result: subprocess.CompletedProcess | None = None
     for attempt in range(retries + 1):
         result = subprocess.run(args, capture_output=True, text=True)
@@ -415,6 +415,14 @@ def _run_ytdlp_with_retry(args: list[str], retries: int = 2, delay: int = 4) -> 
         if attempt < retries:
             print(f"  yt-dlp transient error, retrying in {delay}s ({attempt + 1}/{retries})...", file=sys.stderr)
             time.sleep(delay)
+
+    # All cookie-based attempts failed — try one final time without cookies
+    if "--cookies-from-browser" in args:
+        no_cookie_args = [a for i, a in enumerate(args) if a != "--cookies-from-browser" and (i == 0 or args[i - 1] != "--cookies-from-browser")]
+        print("  retrying without cookies...", file=sys.stderr)
+        result = subprocess.run(no_cookie_args, capture_output=True, text=True)
+        return result
+
     return last_result
 
 
