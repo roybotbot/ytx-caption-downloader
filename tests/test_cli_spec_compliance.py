@@ -94,9 +94,10 @@ Use a folder-first workflow for agent context and reusable project memory."""
 
 
 
-def test_preferred_free_models_default_order_starts_with_deepseek_then_mimo():
-    assert ausum.PREFERRED_FREE_MODELS[0] == "opencode/deepseek-v4-flash-free"
-    assert ausum.PREFERRED_FREE_MODELS[1] == "opencode/mimo-v2.5-free"
+def test_preferred_free_models_default_order_starts_with_openrouter_deepseek():
+    assert ausum.PREFERRED_FREE_MODELS[0] == "opencode/muse-spark-1.2-contributor-free"
+    assert "opencode/muse-spark-1.2-contributor-free" in ausum.PREFERRED_FREE_MODELS
+    assert "opencode/mimo-v2.5-free" in ausum.PREFERRED_FREE_MODELS
 
 
 
@@ -238,27 +239,29 @@ def test_build_failover_queue_preserves_static_priority_and_appends_dynamic(monk
     ])
 
     assert ausum.build_failover_queue() == [
-        "opencode/deepseek-v4-flash-free",
+        "opencode/muse-spark-1.2-contributor-free",
         "opencode/mimo-v2.5-free",
-        "opencode/hy3-free",
         "opencode/nemotron-3-ultra-free",
+        "opencode/deepseek-v4-flash-free",
+        "opencode/hy3-free",
         "opencode/north-mini-code-free",
         "opencode/big-pickle",
     ]
 
 
 def test_build_failover_queue_dedupes_static_and_dynamic(monkeypatch):
-    monkeypatch.setattr(ausum, "fetch_free_models", lambda: ["opencode/deepseek-v4-flash-free", "opencode/x-free"])
+    monkeypatch.setattr(ausum, "fetch_free_models", lambda: ["opencode/mimo-v2.5-free", "opencode/x-free"])
 
     assert ausum.build_failover_queue() == [
-        "opencode/deepseek-v4-flash-free",
+        "opencode/muse-spark-1.2-contributor-free",
         "opencode/mimo-v2.5-free",
+        "opencode/nemotron-3-ultra-free",
         "opencode/x-free",
     ]
 
 
 def test_summarize_transcript_succeeds_on_first_preferred_model_without_pushover(monkeypatch, capsys):
-    monkeypatch.setattr(ausum, "build_failover_queue", lambda: ["opencode/deepseek-v4-flash-free", "opencode/mimo-v2.5-free"])
+    monkeypatch.setattr(ausum, "build_failover_queue", lambda: ["opencode/muse-spark-1.2-contributor-free", "opencode/mimo-v2.5-free"])
     monkeypatch.setattr(ausum, "should_notify_pushover_for_model", lambda model: model not in ausum.PREFERRED_FREE_MODELS)
 
     pushover_calls = []
@@ -276,11 +279,11 @@ def test_summarize_transcript_succeeds_on_first_preferred_model_without_pushover
     assert pushover_calls == []
 
     stderr = capsys.readouterr().err
-    assert "Model used: opencode/deepseek-v4-flash-free" in stderr
+    assert "Model used: opencode/muse-spark-1.2-contributor-free" in stderr
 
 
 def test_summarize_transcript_failovers_to_next_model_on_error_event(monkeypatch, capsys):
-    monkeypatch.setattr(ausum, "build_failover_queue", lambda: ["opencode/deepseek-v4-flash-free", "opencode/mimo-v2.5-free"])
+    monkeypatch.setattr(ausum, "build_failover_queue", lambda: ["opencode/muse-spark-1.2-contributor-free", "opencode/mimo-v2.5-free"])
     monkeypatch.setattr(ausum, "should_notify_pushover_for_model", lambda model: model not in ausum.PREFERRED_FREE_MODELS)
     pushover_calls = []
     monkeypatch.setattr(ausum, "send_pushover", lambda **kwargs: pushover_calls.append(kwargs) or 0)
@@ -301,15 +304,15 @@ def test_summarize_transcript_failovers_to_next_model_on_error_event(monkeypatch
     monkeypatch.setattr(ausum.subprocess, "Popen", fake_popen)
 
     assert ausum.summarize_transcript("transcript") == ("Desc", "summary")
-    assert [c[2] for c in calls] == ["opencode/deepseek-v4-flash-free", "opencode/mimo-v2.5-free"]
+    assert [c[2] for c in calls] == ["opencode/muse-spark-1.2-contributor-free", "opencode/mimo-v2.5-free"]
 
     stderr = capsys.readouterr().err
-    assert "Failed models: opencode/deepseek-v4-flash-free" in stderr
+    assert "Failed models: opencode/muse-spark-1.2-contributor-free" in stderr
     assert "Model used: opencode/mimo-v2.5-free" in stderr
 
 
 def test_summarize_transcript_sends_pushover_when_dynamic_fallback_wins(monkeypatch):
-    monkeypatch.setattr(ausum, "build_failover_queue", lambda: ["opencode/deepseek-v4-flash-free", "opencode/mimo-v2.5-free", "opencode/nemotron-3-ultra-free"])
+    monkeypatch.setattr(ausum, "build_failover_queue", lambda: ["opencode/muse-spark-1.2-contributor-free", "opencode/mimo-v2.5-free", "opencode/x-dynamic-fallback-test"])
     monkeypatch.setattr(ausum, "should_notify_pushover_for_model", lambda model: model not in ausum.PREFERRED_FREE_MODELS)
     pushover_calls = []
     monkeypatch.setattr(ausum, "send_pushover", lambda **kwargs: pushover_calls.append(kwargs) or 0)
@@ -331,11 +334,11 @@ def test_summarize_transcript_sends_pushover_when_dynamic_fallback_wins(monkeypa
 
     ausum.summarize_transcript("transcript")
     assert len(pushover_calls) == 1
-    assert "opencode/nemotron-3-ultra-free" in pushover_calls[0]["message"]
+    assert "opencode/x-dynamic-fallback-test" in pushover_calls[0]["message"]
 
 
 def test_summarize_transcript_raises_when_all_models_fail_and_sends_pushover(monkeypatch):
-    monkeypatch.setattr(ausum, "build_failover_queue", lambda: ["opencode/deepseek-v4-flash-free", "opencode/mimo-v2.5-free"])
+    monkeypatch.setattr(ausum, "build_failover_queue", lambda: ["opencode/muse-spark-1.2-contributor-free", "opencode/mimo-v2.5-free"])
     pushover_calls = []
     monkeypatch.setattr(ausum, "send_pushover", lambda **kwargs: pushover_calls.append(kwargs) or 0)
 

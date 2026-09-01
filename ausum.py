@@ -22,8 +22,9 @@ POLL_LOG_PATH = Path.home() / ".config" / "ausum" / "poll.log"
 ZEN_MODELS_URL = "https://opencode.ai/zen/v1/models"
 
 PREFERRED_FREE_MODELS = [
-    "opencode/deepseek-v4-flash-free",
+    "opencode/muse-spark-1.2-contributor-free",
     "opencode/mimo-v2.5-free",
+    "opencode/nemotron-3-ultra-free",
 ]
 
 ZEN_FREE_MODEL_ID_EXCEPTIONS = {"big-pickle"}
